@@ -1,6 +1,6 @@
 import pytest
 
-from lerobot.processor.wrist_roll_gain_processor import WristRollGainStep, wrap_deg
+from lerobot.processor.wrist_roll_gain_processor import WristRollGainStep, dnr_gain, wrap_deg
 
 
 def feed(step, rolls):
@@ -27,3 +27,31 @@ def test_fixed_gain_doubles_increments():
 def test_target_is_clamped_to_range():
     step = WristRollGainStep(mode="fixed", k_max=2.0, limit_deg=155.0)
     assert feed(step, [0, 50, 100]) == pytest.approx([0, 100, 155])
+
+
+def test_dnr_gain():
+    res = []
+    for i in [20, 30, 60, 90, 200]:
+        res.append(dnr_gain(i, 30, 90, 2))
+    assert res == pytest.approx([0, 0, 1, 2, 2])
+
+
+def test_dnr_slow_rotation_is_frozen():
+    step = WristRollGainStep(mode="dnr", k_max=2.0, fps=30)
+    assert feed(step, [0, 0.5, 1.0, 1.5]) == pytest.approx([0, 0, 0, 0])
+
+
+def test_dnr_mid_speed_is_half_gain():
+    step = WristRollGainStep(mode="dnr", k_max=2.0, fps=30)
+    assert feed(step, [0, 2, 4, 6]) == pytest.approx([0, 2, 4, 6])
+
+
+def test_dnr_fast_rotation_uses_k_max():
+    step = WristRollGainStep(mode="dnr", k_max=2.0, fps=30)
+    assert feed(step, [0, 5, 10, 15]) == pytest.approx([0, 10, 20, 30])
+
+
+def test_dnr_works_in_negative_direction():
+    step = WristRollGainStep(mode="dnr", k_max=2.0, fps=30)
+    # 每帧 -5° × 30 = -150°/s，速度大小 150°/s，高于 s_max
+    assert feed(step, [0, -5, -10, -15]) == pytest.approx([0, -10, -20, -30])

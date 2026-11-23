@@ -1,3 +1,4 @@
+from collections import deque
 from dataclasses import dataclass, field
 
 from lerobot.configs import PipelineFeatureType, PolicyFeature
@@ -17,16 +18,34 @@ def wrap_deg(d: float) -> float:
     return d
 
 
+def dnr_gain(s: float, s_min: float, s_max: float, k_max: float) -> float:
+    """根据 s 在 [s_min, s_max] 的位置，返回一个 0~k_max 的增益。"""
+    if s <= s_min:
+        return 0.0
+    elif s >= s_max:
+        return k_max
+    else:
+        return k_max * (s - s_min) / (s_max - s_min)
+
+
 @ProcessorStepRegistry.register("wrist_roll_gain")
 @dataclass
 class WristRollGainStep(RobotActionProcessorStep):
-    mode: str = "direct"  # "direct" | "fixed"（"dnr" 下一步再加）
+    mode: str = "direct"  # "direct" | "fixed" | "dnr"
     k_max: float = 1.8
     limit_deg: float = 155.0
+    fps: float = 30.0
+    s_min: float = 30.0  # deg/s
+    s_max: float = 90.0  # deg/s
+    window: int = 15  # 帧
 
     # 运行时状态：不是构造参数，所以 init=False
     _prev_input: float | None = field(default=None, init=False, repr=False)
     _target: float | None = field(default=None, init=False, repr=False)
+    _recent: deque = field(default_factory=deque, init=False, repr=False)
+
+    def __post_init__(self):
+        self._recent = deque(maxlen=self.window)
 
     def action(self, action: RobotAction) -> RobotAction:
         roll = action[KEY]
@@ -40,6 +59,7 @@ class WristRollGainStep(RobotActionProcessorStep):
         else:
             d = wrap_deg(roll - self._prev_input)
             # target 加上 k × d，再限制在 [-limit_deg, +limit_deg]
+            self._recent.append(d)
             self._target += self._gain() * d
             self._target = max(-self.limit_deg, min(self.limit_deg, self._target))
         self._prev_input = roll
@@ -52,12 +72,17 @@ class WristRollGainStep(RobotActionProcessorStep):
             return 1.0
         elif self.mode == "fixed":
             return self.k_max
+        elif self.mode == "dnr":
+            dt = 1 / self.fps
+            s_avg = abs(sum(self._recent)) / (len(self._recent) * dt)
+            return dnr_gain(s_avg, self.s_min, self.s_max, self.k_max)
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
 
     def reset(self) -> None:
         self._prev_input = None
         self._target = None
+        self._recent.clear()
 
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
